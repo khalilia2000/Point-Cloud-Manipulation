@@ -15,6 +15,8 @@ from scipy import linspace
 from scipy.misc import comb
 import time
 from tqdm import tqdm
+import matplotlib.tri as mtri
+from sklearn.decomposition import PCA
 
 
 work_dir = 'C:/Users/ali.khalili/Desktop/PointCloud/'
@@ -55,7 +57,7 @@ def poly_filter(src_df, points):
     
 
 
-def plot_point_cloud(point_df, fname, x_range=None, y_range=None, z_range=None):
+def plot_point_cloud(point_df, fname=None, x_range=None, y_range=None, z_range=None, marker_size=0.5):
     '''
     Plot a point cloud given data points in a pandas dataframe object
     X_range: list indicating the min/max of the plot axis; if None equals the min/max of datapoints
@@ -91,7 +93,7 @@ def plot_point_cloud(point_df, fname, x_range=None, y_range=None, z_range=None):
         p_df = p_df[(p_df['Z']>=z_range[0]) & (p_df['Z']<=z_range[1])]
     
     # plot scatter plot with datapoints
-    ax.scatter(p_df.X, p_df.Y, p_df.Z, c='k', marker='.', s=0.5, facecolors='none', edgecolors='none')
+    ax.scatter(p_df.X, p_df.Y, p_df.Z, c='k', marker='.', s=marker_size, facecolors='none', edgecolors='none')
     
     # set labels
     ax.set_xlabel('X')    
@@ -99,7 +101,8 @@ def plot_point_cloud(point_df, fname, x_range=None, y_range=None, z_range=None):
     ax.set_zlabel('Z')
         
     # save plot to file
-    fig.savefig(work_dir+fname, dpi=600)
+    if fname is not None:
+        fig.savefig(work_dir+fname, dpi=600)
     # show the plot
     plt.show()
     
@@ -140,7 +143,7 @@ def plane_params(p0, p1, p2):
     '''
     Provide the equation of the plane in all forms specified below, given 3 points p0, p1 and p2:
     form1:  (A, B, C, D) where Ax+By+Cz+D=0
-    form2:  (theta, alpha) where theta is the angle between normal to the plane and the z axis,
+    form2:  (alpha, theta) where theta is the angle between normal to the plane and the z axis,
             alpha is the angle between the intersection of the plane with xy plane and the x axis, and
             delta is the distance from the origin. theta varies from 0 to 90 degrees, and alpha varies 
             from -90 to 90 degrees.
@@ -172,11 +175,59 @@ def plane_params(p0, p1, p2):
     
 
 
-def build_3D_hist(points_df, 
+def slide_boxes(x_start_stop,y_start_stop,z_start_stop,
+                box_size=1.0, overlap=0.5):
+    '''
+    Takes start/stop coordinates, box_size and overlap and returns list of box coordinates.
+    x_start_stop: start and end position in x direction (array of size 2)
+    y_start_stop: start and end position in y direction (array of size 2)
+    z_start_stop: start and end position in z direction (array of size 2)
+    xyz_box: size of the box in x, y and y directions. 
+    xy_overlap: amount of overlap between windows in x, y and z directions
+    '''
+    
+    # Compute set box_size and overlap in all directions - 3-tuples
+    xyz_box=(box_size, box_size, box_size)
+    xyz_overlap=(overlap, overlap, overlap)
+    # Compute the span of the region to be searched    
+    xspan = x_start_stop[1]-x_start_stop[0]
+    yspan = y_start_stop[1]-y_start_stop[0]
+    zspan = z_start_stop[1]-z_start_stop[0]
+    # Compute the number of pixels per step in x/y
+    nx_per_step = xyz_box[0]*(1-xyz_overlap[0])
+    ny_per_step = xyz_box[1]*(1-xyz_overlap[1])
+    nz_per_step = xyz_box[2]*(1-xyz_overlap[2])
+    # Compute the number of windows in x/y
+    nx_windows = np.int(xspan/nx_per_step) - 1
+    ny_windows = np.int(yspan/ny_per_step) - 1
+    nz_windows = np.int(zspan/nz_per_step) - 1
+    # Initialize a list to append window positions to
+    box_list = []
+    # Loop through finding x, y and z window positions
+    for zs in range(nz_windows):
+        for ys in range(ny_windows):
+            for xs in range(nx_windows):
+                # Calculate window position
+                startx = xs*nx_per_step + x_start_stop[0]
+                endx = startx + xyz_box[0]
+                starty = ys*ny_per_step + y_start_stop[0]
+                endy = starty + xyz_box[1]
+                startz = zs*nz_per_step + z_start_stop[0]
+                endz = startz + xyz_box[2]
+                # Append window position to list
+                box_list.append(((startx, starty, startz), (endx, endy, endz)))
+    # Return the list of windows
+    return box_list
+
+
+
+def build_3D_hist(points_df, hist_3D,
+                  triangles=None,
                   alpha_bins=(-np.pi/2,np.pi/2,180),
                   theta_bins=(0,np.pi/2,90), 
                   delta_bins=(0,30,300), 
-                  dist_cutoff=0.5):
+                  dist_cutoff=0.5,
+                  num_points=3):
     '''
     For every 2 points in the points_df calculate the plunge and azimuth and delta and form a 
     3D histogram.
@@ -185,27 +236,12 @@ def build_3D_hist(points_df,
     azimuth_bins: 3-tuple containing (min, max, nbins) for azimuth
     delta_bins: 3-tuple containing (min, max, nbins) for delta
     '''
-    # Sort points_df based on X, Y, and Z
-    points_df.sort_values(['X', 'Y', 'Z'], ascending=[1,1,1], inplace=True)    
     
-    # Calculate the borders and midpoints of each bin
-    theta_borders = linspace(theta_bins[0], theta_bins[1], theta_bins[2]+1)
-    theta_mids = (theta_borders[:-1]+theta_borders[1:])/2
-    alpha_borders = linspace(alpha_bins[0], alpha_bins[1], alpha_bins[2]+1)
-    alpha_mids = (alpha_borders[:-1]+alpha_borders[1:])/2
-    delta_borders = linspace(delta_bins[0], delta_bins[1], delta_bins[2]+1)
-    delta_mids = (delta_borders[:-1]+delta_borders[1:])/2
-    
-    # Initialize the 3D histogram
-    hist_3D = np.zeros((alpha_bins[2], theta_bins[2], delta_bins[2]))
-    
-    # keep track of time
-    t_start = time.time()    
-    # Iterate through all 2 point combinations
-    num_points = 3
-    for (i,j,k) in tqdm(itertools.combinations(points_df.index, num_points), total=int(comb(len(points_df), num_points))):
-        # Only points if their distances along each major axis is less than cut-off
-        if True:
+    # if triangles are not provided iterate through all triangles (i.e. no efficient at all)
+    if triangles is None:
+        # Iterate through all num_points combinations
+        for (i,j,k) in itertools.combinations(points_df.index, num_points):
+            # Only points if their distances along each major axis is less than cut-off
             tmp_df = points_df[(points_df.index==i) | (points_df.index==j) | (points_df.index==k)]
             if tmp_df.X.ptp()<=dist_cutoff:          
                 if tmp_df.Y.ptp()<=dist_cutoff:
@@ -221,15 +257,110 @@ def build_3D_hist(points_df,
                         d_loc = int(np.floor((delta-delta_bins[0])/(delta_bins[1]-delta_bins[0])*delta_bins[2]))
                         # increase the bin value
                         hist_3D[a_loc, t_loc, d_loc] += 1
-    # keep track of time
-    t_end = time.time()
+    else:
+        for [irow,jrow,krow] in triangles:
+            i = points_df.index[irow]
+            j = points_df.index[jrow]
+            k = points_df.index[krow]
+            # Only points if their distances along each major axis is less than cut-off
+            tmp_df = points_df[(points_df.index==i) | (points_df.index==j) | (points_df.index==k)]
+            if tmp_df.X.ptp()<=dist_cutoff:          
+                if tmp_df.Y.ptp()<=dist_cutoff:
+                    if tmp_df.Z.ptp()<=dist_cutoff:
+                        # calculate line parameters
+                        p0 = (tmp_df['X'][i], tmp_df['Y'][i], tmp_df['Z'][i])
+                        p1 = (tmp_df['X'][j], tmp_df['Y'][j], tmp_df['Z'][j])
+                        p2 = (tmp_df['X'][k], tmp_df['Y'][k], tmp_df['Z'][k])
+                        (A, B, C, D), (alpha, theta), (strike,dip), delta = plane_params(p0, p1, p2)
+                        # calculate the corresponding index for the hist_3D object
+                        a_loc = int(np.floor((alpha-alpha_bins[0])/(alpha_bins[1]-alpha_bins[0])*alpha_bins[2]))
+                        t_loc = int(np.floor((theta-theta_bins[0])/(theta_bins[1]-theta_bins[0])*theta_bins[2]))
+                        d_loc = int(np.floor((delta-delta_bins[0])/(delta_bins[1]-delta_bins[0])*delta_bins[2]))
+                        # increase the bin value
+                        hist_3D[a_loc, t_loc, d_loc] += 1
+        
+    return hist_3D
+    
+    
+    
+def read_data_and_process(data_frame=None, verbose=True):
+    # Define boundary points and read/extract point cloud
+    bounary_points = [(543214,5698566),(543233,5698568),(543233,5698581),(543214,5698579)]
+    # Reading and initial filtering of the point cloud
+    if data_frame is None:
+        if verbose:
+            print('Reading data....')
+        df1, translation = read_data('hwy1w.pts', delim=' ', filter_points=bounary_points)    
+        if verbose:
+            print('Complete.')
+    else:
+        df1 = data_frame
+    # Calculate box list
+    box_list = slide_boxes([df1['X'].min(), df1['X'].max()], 
+                           [df1['Y'].min(), df1['Y'].max()], 
+                           [df1['Z'].min(), df1['Z'].max()],
+                           box_size=1.0, overlap=0.2)
+    # Define alpha, theta, and delta bins
+    alpha_bins=(-np.pi/2*91/90,np.pi/2*91/90,182)
+    theta_bins=(0,np.pi/2*91/90,91)
+    delta_bins=(0,30,300)
+    # Calculate the borders and midpoints of each bin
+    theta_borders = linspace(theta_bins[0], theta_bins[1], theta_bins[2]+1)
+    theta_mids = (theta_borders[:-1]+theta_borders[1:])/2
+    alpha_borders = linspace(alpha_bins[0], alpha_bins[1], alpha_bins[2]+1)
+    alpha_mids = (alpha_borders[:-1]+alpha_borders[1:])/2
+    delta_borders = linspace(delta_bins[0], delta_bins[1], delta_bins[2]+1)
+    delta_mids = (delta_borders[:-1]+delta_borders[1:])/2
+    # Initialize the 3D histogram
+    hist_3D = np.zeros((alpha_bins[2], theta_bins[2], delta_bins[2]))
+    # Iterate through box_list and filter only points that are inside the box and process them
+    points_count = []
+    for box in tqdm(box_list):
+        tmp_df = df1[(df1['X']>=box[0][0]) & (df1['X']<=box[1][0]) & \
+                     (df1['Y']>=box[0][1]) & (df1['Y']<=box[1][1]) & \
+                     (df1['Z']>=box[0][2]) & (df1['Z']<=box[1][2])]
+        # process the reduced dataframe if a minimum number of points exist
+        if len(tmp_df)>3:
+            # Keep track of the number of datapoints in each sliding box
+            points_count.append(len(tmp_df))
+            # create ndarray and perform PCA analysis on datapoints
+            data_vals = tmp_df.values 
+            pca = PCA()
+            pca.fit_transform(data_vals)
+            # Triangulate parameter space to determine the triangles
+            tri = mtri.Triangulation(data_vals[:,0], data_vals[:,1])            
+            # Add to the 3d histogram
+            hist_3D = build_3D_hist(tmp_df, hist_3D, tri.triangles,
+                                    alpha_bins=alpha_bins, 
+                                    theta_bins=theta_bins, 
+                                    delta_bins=delta_bins)
+        
+    return df1, hist_3D, points_count
+    
 
-    print('total time = {:.3f} seconds'.format(t_end-t_start))
-    
-    return hist_3D, theta_mids, alpha_mids, delta_mids
-    
-    
 
+def test(df_obj):
+    
+    data_vals = df_obj.values 
+    pca = PCA()
+    pca.fit_transform(data_vals)
+    
+    # define x, y, z
+    x = df_obj.X.values
+    y = df_obj.Y.values  
+    z = df_obj.Z.values
+    
+    # Triangulate parameter space to determine the triangles
+    tri = mtri.Triangulation(data_vals[:,0], data_vals[:,1])
+    
+    fig = plt.figure()
+    ax = fig.add_subplot(1,1,1, projection='3d')
+    ax.plot_trisurf(x, y, z, triangles=tri.triangles, cmap=plt.cm.Spectral)
+    
+    return tri
+    
+    
+ 
 
 def main():
     pass
