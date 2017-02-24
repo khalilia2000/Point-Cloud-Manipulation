@@ -143,13 +143,14 @@ def plane_params(p0, p1, p2):
     '''
     Provide the equation of the plane in all forms specified below, given 3 points p0, p1 and p2:
     form1:  (A, B, C, D) where Ax+By+Cz+D=0
-    form2:  (alpha, theta) where theta is the angle between normal to the plane and the z axis,
-            alpha is the angle between the intersection of the plane with xy plane and the x axis, and
-            delta is the distance from the origin. theta varies from 0 to 90 degrees, and alpha varies 
-            from -90 to 90 degrees.
-    form3:  (strike, dip) where the strike is the angle between the intersection of the plane with xy plane 
-            and the y axis, and dip is the angle between the normal vector to the plane with xy plane. strike
-            varies between -90 and 90 degrees, and dip varies between 0 and 90 degrees
+    form2:  (alpha, theta) where alpha is the angle between the normal vector from origin to the line of 
+            intersection of the plane with xy plane and the x axis measured from 0 to 2*pi (0 aligning with x axis), 
+            theta is the angle between normal to the plane and the z axis, and delta is the distance from the origin. 
+            alpha varies between 0 and 2*pi, theta varies from 0 to pi/2.
+    form3:  (norm_strike, dip) where the norm_strike is the angle between the normal vector to the intersection of 
+            the plane with xy plane taken fro the origin and the y axis (clockwise is +), and dip is the angle 
+            between the normal vector to the plane with xy plane. norm_strike varies between 0 and 2*pi, and dip 
+            varies between 0 and pi/2.
     return delta - the distance from origin - to be used along with forms 2 and 3 above.
     p0, p1 and p2 are 3-tuples with x, y, z coordinates
     '''
@@ -160,18 +161,38 @@ def plane_params(p0, p1, p2):
     D = -p0[0]*A-p0[1]*B-p0[2]*C
     norm_length = ((A**2+B**2+C**2)**0.5)
     # Plane equation form 2    
-    if B!=0:
-        alpha = np.math.atan(A/B) # angle of intersection with xy plane with x axis
+    # calculate the coefficient determining the point of normal to the line from oirigin
+    t=-D/(A**2+B**2)
+    # determine normal vector to the line of intersection of the plane with xy plane taken from the origin
+    nx=t*A
+    ny=t*B
+    # calculate the angle of the normal vector to the x axis
+    if A!=0:
+        # deermine alpha based on a 360 degree rotation - 0 is the x axis
+        alpha = np.math.atan(B/A) # angle of intersection with xy plane with x axis
+        # based on the direction of the normal vector determine alpha
+        if (nx>=0) and (ny>=0):
+            alpha += 0
+        if (nx<0) and (ny>=0):
+            alpha += np.pi
+        if (nx<0) and (ny<0):
+            alpha += np.pi
+        if (nx>=0) and (ny<0):
+            alpha += np.pi*2
     else:
-        alpha = np.pi/2
+        if ny>=0:
+            alpha = np.pi/2
+        else:
+            alpha = 3*np.pi/2
     theta = np.math.acos(abs(C)/norm_length)
     # Plane equation form 3
-    strike = np.pi/2-alpha # angle of intersection with xy plane with y axis    
+    # norm_strike is the angle of the normal to the intersection with xy plane from origin with y axis - clockwise is +
+    norm_strike = (5*np.pi/2-alpha)%(2*np.pi) 
     dip = np.pi/2 - theta
     # calculate distance from origin
     delta = abs(D)/norm_length
     # return plane parameters
-    return (A, B, C, D), (alpha, theta), (strike,dip), delta
+    return (A, B, C, D), (alpha, theta), (norm_strike,dip), delta
     
 
 
@@ -221,69 +242,44 @@ def slide_boxes(x_start_stop,y_start_stop,z_start_stop,
 
 
 
-def build_3D_hist(points_df, hist_3D,
-                  triangles=None,
-                  alpha_bins=(-np.pi/2,np.pi/2,180),
-                  theta_bins=(0,np.pi/2,90), 
-                  delta_bins=(0,30,300), 
-                  dist_cutoff=0.5,
-                  num_points=3):
+def build_plane_list(points_df, plane_list, point_list, triangles=None, dist_cutoff=0.5):
     '''
     For every 2 points in the points_df calculate the plunge and azimuth and delta and form a 
     3D histogram.
-    points_df: dataframe containing x, y, z of all points
-    plunge_bins: 3-tuple containing (min, max, nbins) for plunge
-    azimuth_bins: 3-tuple containing (min, max, nbins) for azimuth
-    delta_bins: 3-tuple containing (min, max, nbins) for delta
+    points_df: dataframe containing x, y, z of all points in the point cloud
+    plane_list: array/list containing parameters for all of the planes that are extracted from current point cloud
+    triangles: the list of triangles to explore
+    dist_cutoff: distance cut_off for pruning triangles
     '''
     
-    # if triangles are not provided iterate through all triangles (i.e. no efficient at all)
-    if triangles is None:
-        # Iterate through all num_points combinations
-        for (i,j,k) in itertools.combinations(points_df.index, num_points):
-            # Only points if their distances along each major axis is less than cut-off
-            tmp_df = points_df[(points_df.index==i) | (points_df.index==j) | (points_df.index==k)]
-            if tmp_df.X.ptp()<=dist_cutoff:          
-                if tmp_df.Y.ptp()<=dist_cutoff:
-                    if tmp_df.Z.ptp()<=dist_cutoff:
-                        # calculate line parameters
-                        p0 = (tmp_df['X'][i], tmp_df['Y'][i], tmp_df['Z'][i])
-                        p1 = (tmp_df['X'][j], tmp_df['Y'][j], tmp_df['Z'][j])
-                        p2 = (tmp_df['X'][k], tmp_df['Y'][k], tmp_df['Z'][k])
-                        (A, B, C, D), (alpha, theta), (strike,dip), delta = plane_params(p0, p1, p2)
-                        # calculate the corresponding index for the hist_3D object
-                        a_loc = int(np.floor((alpha-alpha_bins[0])/(alpha_bins[1]-alpha_bins[0])*alpha_bins[2]))
-                        t_loc = int(np.floor((theta-theta_bins[0])/(theta_bins[1]-theta_bins[0])*theta_bins[2]))
-                        d_loc = int(np.floor((delta-delta_bins[0])/(delta_bins[1]-delta_bins[0])*delta_bins[2]))
-                        # increase the bin value
-                        hist_3D[a_loc, t_loc, d_loc] += 1
-    else:
-        for [irow,jrow,krow] in triangles:
-            i = points_df.index[irow]
-            j = points_df.index[jrow]
-            k = points_df.index[krow]
-            # Only points if their distances along each major axis is less than cut-off
-            tmp_df = points_df[(points_df.index==i) | (points_df.index==j) | (points_df.index==k)]
-            if tmp_df.X.ptp()<=dist_cutoff:          
-                if tmp_df.Y.ptp()<=dist_cutoff:
-                    if tmp_df.Z.ptp()<=dist_cutoff:
-                        # calculate line parameters
-                        p0 = (tmp_df['X'][i], tmp_df['Y'][i], tmp_df['Z'][i])
-                        p1 = (tmp_df['X'][j], tmp_df['Y'][j], tmp_df['Z'][j])
-                        p2 = (tmp_df['X'][k], tmp_df['Y'][k], tmp_df['Z'][k])
-                        (A, B, C, D), (alpha, theta), (strike,dip), delta = plane_params(p0, p1, p2)
-                        # calculate the corresponding index for the hist_3D object
-                        a_loc = int(np.floor((alpha-alpha_bins[0])/(alpha_bins[1]-alpha_bins[0])*alpha_bins[2]))
-                        t_loc = int(np.floor((theta-theta_bins[0])/(theta_bins[1]-theta_bins[0])*theta_bins[2]))
-                        d_loc = int(np.floor((delta-delta_bins[0])/(delta_bins[1]-delta_bins[0])*delta_bins[2]))
-                        # increase the bin value
-                        hist_3D[a_loc, t_loc, d_loc] += 1
+    for [irow,jrow,krow] in triangles:
+        i = points_df.index[irow]
+        j = points_df.index[jrow]
+        k = points_df.index[krow]
+        # Only points if their distances along each major axis is less than cut-off
+        tmp_df = points_df[(points_df.index==i) | (points_df.index==j) | (points_df.index==k)]
+        if tmp_df.X.ptp()<=dist_cutoff:          
+            if tmp_df.Y.ptp()<=dist_cutoff:
+                if tmp_df.Z.ptp()<=dist_cutoff:
+                    # calculate line parameters
+                    p0 = (tmp_df['X'][i], tmp_df['Y'][i], tmp_df['Z'][i])
+                    p1 = (tmp_df['X'][j], tmp_df['Y'][j], tmp_df['Z'][j])
+                    p2 = (tmp_df['X'][k], tmp_df['Y'][k], tmp_df['Z'][k])
+                    (A, B, C, D), (alpha, theta), (norm_strike,dip), delta = plane_params(p0, p1, p2)
+                    # append results to the list/array
+                    plane_list.append([A, B, C, D, alpha, theta, norm_strike, delta])
+                    point_list.append([p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]])
         
-    return hist_3D
+    return plane_list, point_list
     
     
     
 def read_data_and_process(data_frame=None, verbose=True):
+    '''
+    Read points cloud data within a specified zone and extract all plane parameters
+    data_frame: if provided, the data in the dataframe will be used without filtering instead of reading from file.
+    verbose: print additional details if True
+    '''
     # Define boundary points and read/extract point cloud
     bounary_points = [(543214,5698566),(543233,5698568),(543233,5698581),(543214,5698579)]
     # Reading and initial filtering of the point cloud
@@ -300,21 +296,11 @@ def read_data_and_process(data_frame=None, verbose=True):
                            [df1['Y'].min(), df1['Y'].max()], 
                            [df1['Z'].min(), df1['Z'].max()],
                            box_size=1.0, overlap=0.2)
-    # Define alpha, theta, and delta bins
-    alpha_bins=(-np.pi/2*91/90,np.pi/2*91/90,182)
-    theta_bins=(0,np.pi/2*91/90,91)
-    delta_bins=(0,30,300)
-    # Calculate the borders and midpoints of each bin
-    theta_borders = linspace(theta_bins[0], theta_bins[1], theta_bins[2]+1)
-    theta_mids = (theta_borders[:-1]+theta_borders[1:])/2
-    alpha_borders = linspace(alpha_bins[0], alpha_bins[1], alpha_bins[2]+1)
-    alpha_mids = (alpha_borders[:-1]+alpha_borders[1:])/2
-    delta_borders = linspace(delta_bins[0], delta_bins[1], delta_bins[2]+1)
-    delta_mids = (delta_borders[:-1]+delta_borders[1:])/2
-    # Initialize the 3D histogram
-    hist_3D = np.zeros((alpha_bins[2], theta_bins[2], delta_bins[2]))
-    # Iterate through box_list and filter only points that are inside the box and process them
+    # Initialize the objects to keep track of planes, points on planes and number of points in each sliding box
+    plane_list = []
+    point_list = []
     points_count = []
+    # Iterate through box_list and filter only points that are inside the box and process them
     for box in tqdm(box_list):
         tmp_df = df1[(df1['X']>=box[0][0]) & (df1['X']<=box[1][0]) & \
                      (df1['Y']>=box[0][1]) & (df1['Y']<=box[1][1]) & \
@@ -330,37 +316,32 @@ def read_data_and_process(data_frame=None, verbose=True):
             # Triangulate parameter space to determine the triangles
             tri = mtri.Triangulation(data_vals[:,0], data_vals[:,1])            
             # Add to the 3d histogram
-            hist_3D = build_3D_hist(tmp_df, hist_3D, tri.triangles,
-                                    alpha_bins=alpha_bins, 
-                                    theta_bins=theta_bins, 
-                                    delta_bins=delta_bins)
+            plane_list, point_list = build_plane_list(tmp_df, plane_list, point_list, tri.triangles, dist_cutoff=0.5)
         
-    return df1, hist_3D, points_count
+    return df1, plane_list, point_list, points_count
     
 
 
-def test(df_obj):
+def test(hist_2D):
+    # Define alpha, theta, and delta bins
+    alpha_bins=(-np.pi/2*91/90,np.pi/2*91/90,182)
+    theta_bins=(0,np.pi/2*91/90,91)
+    delta_bins=(0,30,300)
+    # Calculate the borders and midpoints of each bin
+    theta_borders = linspace(theta_bins[0], theta_bins[1], theta_bins[2]+1)
+    theta_mids = (theta_borders[:-1]+theta_borders[1:])/2
+    alpha_borders = linspace(alpha_bins[0], alpha_bins[1], alpha_bins[2]+1)
+    alpha_mids = (alpha_borders[:-1]+alpha_borders[1:])/2
+    delta_borders = linspace(delta_bins[0], delta_bins[1], delta_bins[2]+1)
+    delta_mids = (delta_borders[:-1]+delta_borders[1:])/2
+    #
     
-    data_vals = df_obj.values 
-    pca = PCA()
-    pca.fit_transform(data_vals)
-    
-    # define x, y, z
-    x = df_obj.X.values
-    y = df_obj.Y.values  
-    z = df_obj.Z.values
-    
-    # Triangulate parameter space to determine the triangles
-    tri = mtri.Triangulation(data_vals[:,0], data_vals[:,1])
-    
+    #
     fig = plt.figure()
-    ax = fig.add_subplot(1,1,1, projection='3d')
-    ax.plot_trisurf(x, y, z, triangles=tri.triangles, cmap=plt.cm.Spectral)
+    ax = fig.add_subplot(111, projection='3d')
+    #
     
-    return tri
-    
-    
- 
+
 
 def main():
     pass
