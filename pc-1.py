@@ -162,7 +162,10 @@ def plane_params(p0, p1, p2):
     norm_length = ((A**2+B**2+C**2)**0.5)
     # Plane equation form 2    
     # calculate the coefficient determining the point of normal to the line from oirigin
-    t=-D/(A**2+B**2)
+    if (A**2+B**2)!=0:
+        t=-D/(A**2+B**2)
+    else:
+        t=1
     # determine normal vector to the line of intersection of the plane with xy plane taken from the origin
     nx=t*A
     ny=t*B
@@ -267,7 +270,7 @@ def build_plane_list(points_df, plane_list, point_list, triangles=None, dist_cut
                     p2 = (tmp_df['X'][k], tmp_df['Y'][k], tmp_df['Z'][k])
                     (A, B, C, D), (alpha, theta), (norm_strike,dip), delta = plane_params(p0, p1, p2)
                     # append results to the list/array
-                    plane_list.append([A, B, C, D, alpha, theta, norm_strike, delta])
+                    plane_list.append([A, B, C, D, alpha, theta, norm_strike, dip, delta, i, j, k])
                     point_list.append([p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]])
         
     return plane_list, point_list
@@ -286,9 +289,11 @@ def read_data_and_process(data_frame=None, verbose=True):
     if data_frame is None:
         if verbose:
             print('Reading data....')
+        t_start = time.time()
         df1, translation = read_data('hwy1w.pts', delim=' ', filter_points=bounary_points)    
+        t_end = time.time()
         if verbose:
-            print('Complete.')
+            print('Reading Complete... - Time to Read: {:3f} seconds'.format(t_end-t_start))
     else:
         df1 = data_frame
     # Calculate box list
@@ -322,25 +327,15 @@ def read_data_and_process(data_frame=None, verbose=True):
     
 
 
-def test(hist_2D):
-    # Define alpha, theta, and delta bins
-    alpha_bins=(-np.pi/2*91/90,np.pi/2*91/90,182)
-    theta_bins=(0,np.pi/2*91/90,91)
-    delta_bins=(0,30,300)
-    # Calculate the borders and midpoints of each bin
-    theta_borders = linspace(theta_bins[0], theta_bins[1], theta_bins[2]+1)
-    theta_mids = (theta_borders[:-1]+theta_borders[1:])/2
-    alpha_borders = linspace(alpha_bins[0], alpha_bins[1], alpha_bins[2]+1)
-    alpha_mids = (alpha_borders[:-1]+alpha_borders[1:])/2
-    delta_borders = linspace(delta_bins[0], delta_bins[1], delta_bins[2]+1)
-    delta_mids = (delta_borders[:-1]+delta_borders[1:])/2
-    #
+def test(strike_norm, dip):
     
     #
     fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
+    ax = fig.add_subplot(111)
     #
-    
+    ax.hist2d(strike_norm, dip, bins=100)
+    plt.colorbar()
+    plt.show()
 
 
 def main():
