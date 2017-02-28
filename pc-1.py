@@ -10,9 +10,6 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import matplotlib.path as mplPath
-import itertools
-from scipy import linspace
-from scipy.misc import comb
 import time
 from tqdm import tqdm
 import matplotlib.tri as mtri
@@ -54,61 +51,6 @@ def poly_filter(src_df, points):
     src_df['Cond'] = polygon.contains_points(src_df.as_matrix(columns=['X','Y']))
     # Return the new data Frame Object
     return (src_df[src_df['Cond']==True])[['X','Y','Z']]
-    
-
-
-def plot_point_cloud(point_df, fname=None, x_range=None, y_range=None, z_range=None, marker_size=0.5):
-    '''
-    Plot a point cloud given data points in a pandas dataframe object
-    X_range: list indicating the min/max of the plot axis; if None equals the min/max of datapoints
-    Y_range: list indicating the min/max of the plot axis; if None equals the min/max of datapoints
-    Z_range: list indicating the min/max of the plot axis; if None equals the min/max of datapoints
-    fname: filename to use to save the image to
-    '''
-    
-    # set up figure and axis
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    
-    # copy dataframe object    
-    p_df = point_df.copy()
-    
-    # set axis range for X axis
-    if x_range is None:
-        ax.set_xlim([p_df['X'].min(), p_df['X'].max()])
-    else:
-        ax.set_xlim(x_range)
-        p_df = p_df[(p_df['X']>=x_range[0]) & (p_df['X']<=x_range[1])]
-    # set axis range for Y axis
-    if y_range is None:
-        ax.set_ylim([p_df['Y'].min(), p_df['Y'].max()])
-    else:
-        ax.set_ylim(y_range)
-        p_df = p_df[(p_df['Y']>=y_range[0]) & (p_df['Y']<=y_range[1])]
-    # set axis range for Z axis
-    if z_range is None:
-        ax.set_zlim([p_df['Z'].min(), p_df['Z'].max()])
-    else:
-        ax.set_zlim(z_range)
-        p_df = p_df[(p_df['Z']>=z_range[0]) & (p_df['Z']<=z_range[1])]
-    
-    # plot scatter plot with datapoints
-    ax.scatter(p_df.X, p_df.Y, p_df.Z, c='k', marker='.', s=marker_size, facecolors='none', edgecolors='none')
-    
-    # set labels
-    ax.set_xlabel('X')    
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-        
-    # save plot to file
-    if fname is not None:
-        fig.savefig(work_dir+fname, dpi=600)
-    # show the plot
-    plt.show()
-    
-    
-    # return number of points that are plotted
-    return len(p_df)
 
 
 
@@ -148,7 +90,7 @@ def plane_params(p0, p1, p2):
             theta is the angle between normal to the plane and the z axis, and delta is the distance from the origin. 
             alpha varies between 0 and 2*pi, theta varies from 0 to pi/2.
     form3:  (norm_strike, dip) where the norm_strike is the angle between the normal vector to the intersection of 
-            the plane with xy plane taken fro the origin and the y axis (clockwise is +), and dip is the angle 
+            the plane with xy plane taken from the origin and the y axis (clockwise is +), and dip is the angle 
             between the normal vector to the plane with xy plane. norm_strike varies between 0 and 2*pi, and dip 
             varies between 0 and pi/2.
     return delta - the distance from origin - to be used along with forms 2 and 3 above.
@@ -284,7 +226,7 @@ def read_data_and_process(data_frame=None, verbose=True):
     verbose: print additional details if True
     '''
     # Define boundary points and read/extract point cloud
-    bounary_points = [(543214,5698566),(543233,5698568),(543233,5698581),(543214,5698579)]
+    bounary_points = [(542024,5697991),(541995,5697986),(542000,5697971),(542024,5697972)]
     # Reading and initial filtering of the point cloud
     if data_frame is None:
         if verbose:
@@ -305,37 +247,159 @@ def read_data_and_process(data_frame=None, verbose=True):
     plane_list = []
     point_list = []
     points_count = []
+    tri_list = []
     # Iterate through box_list and filter only points that are inside the box and process them
     for box in tqdm(box_list):
         tmp_df = df1[(df1['X']>=box[0][0]) & (df1['X']<=box[1][0]) & \
                      (df1['Y']>=box[0][1]) & (df1['Y']<=box[1][1]) & \
                      (df1['Z']>=box[0][2]) & (df1['Z']<=box[1][2])]
+        # Keep track of the number of datapoints in each sliding box
+        points_count.append(len(tmp_df))
         # process the reduced dataframe if a minimum number of points exist
         if len(tmp_df)>3:
-            # Keep track of the number of datapoints in each sliding box
-            points_count.append(len(tmp_df))
             # create ndarray and perform PCA analysis on datapoints
             data_vals = tmp_df.values 
             pca = PCA()
             pca.fit_transform(data_vals)
             # Triangulate parameter space to determine the triangles
             tri = mtri.Triangulation(data_vals[:,0], data_vals[:,1])            
+            tri_list.append(tri)
             # Add to the 3d histogram
             plane_list, point_list = build_plane_list(tmp_df, plane_list, point_list, tri.triangles, dist_cutoff=0.5)
+        else:
+            tri_list.append(None)
         
-    return df1, plane_list, point_list, points_count
+    return df1, np.asarray(plane_list), np.asarray(point_list), np.asarray(points_count), box_list, tri_list
     
 
 
-def test(strike_norm, dip):
+def polar_stereonet(ax, strike_norm, theta, min_count, rlabel=None):
+    '''
+    plot a stereonet using ax that is provided
+    ax: axes object
+    striek_norm: dataset
+    theta: dataset
+    min_count: filter data before plotting with only allowing bins with higher than min_count datapoints
+    rlabel: label the r axis if provided
+    '''
+    # copy data
+    dip_deg = theta
+    # create histogram and use mgrid to define theta, and r data
+    H, xedges, yedges = np.histogram2d(strike_norm, dip_deg, bins=[30,15])
+    H[H<min_count] = 0
+    theta, r = np.mgrid[0:2*np.pi:30j, 0:90:15j]
+    # set chart properties
+    label_position = 67.5
+    ax.set_theta_direction(-1)
+    ax.set_theta_offset(np.pi/2)
+    ax.set_rticks([0, 30, 60, 90])
+    ax.set_rlabel_position(label_position)
+    # set label for r axis
+    if rlabel is not None:
+        ax.text(np.radians(label_position), ax.get_rmax()+10, rlabel, 
+                 rotation=90-label_position, ha='left', va='bottom')
+    # plot data using pcolormesh
+    ax.pcolormesh(theta, r, H, shading='gouraud', cmap=plt.get_cmap('Blues'), edgecolors='None')    
+    ax.plot(np.radians([10,45,45,10,10]),[45,45,60,60,45], color='r', zorder=10)
+    # plot gridlines
+    ax.grid(True, linewidth=1)
+    ax.set_yticks([0,15,30,45,60,75,90])
+    ax.set_yticklabels(map(str, [90,'',60,'',30,'',0]))
+    ax.set_xlabel('Pole Strike, degrees')
+    # return axis
+    return ax
     
-    #
+
+
+def plot_double_stereonets(strike_norm, dip, theta, fname=None, min_count=0):
+    '''
+    plot double steronet - the left one will be pole dip and normal_strike, the right one will be the
+    plane dip and normal_strike.
+    strike_norm: dataset
+    dip: dataset 
+    theta: dataset
+    fname: filename to save the figure, if is not None
+    min_count: filter data before plotting with only allowing bins with higher than min_count datapoints
+    '''
+    # set up figure
+    fig = plt.figure(figsize=(12,4),dpi=600)
+    # set up axis 0 for left plot
+    ax0 = fig.add_subplot(121, projection='polar')
+    ax0 = polar_stereonet(ax0, strike_norm, theta, min_count, rlabel='Pole Dip, degrees')
+    # set up axis 1 for rigth plot
+    ax1 = fig.add_subplot(122, projection='polar')
+    ax1 = polar_stereonet(ax1, strike_norm, dip, min_count, rlabel='Plane Dip, degrees')
+    # save figure if fname is provided
+    if fname is not None:
+        plt.savefig(work_dir+fname, dpi=600)
+
+
+
+def plot_point_cloud(point_df, fname=None, x_range=None, y_range=None, z_range=None, marker_size=0.5):
+    '''
+    Plot a point cloud given data points in a pandas dataframe object
+    X_range: list indicating the min/max of the plot axis; if None equals the min/max of datapoints
+    Y_range: list indicating the min/max of the plot axis; if None equals the min/max of datapoints
+    Z_range: list indicating the min/max of the plot axis; if None equals the min/max of datapoints
+    fname: filename to use to save the image to
+    '''
+    
+    # set up figure and axis
     fig = plt.figure()
-    ax = fig.add_subplot(111)
-    #
-    ax.hist2d(strike_norm, dip, bins=100)
-    plt.colorbar()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # copy dataframe object    
+    p_df = point_df.copy()
+    
+    # set axis range for X axis
+    if x_range is None:
+        ax.set_xlim([p_df['X'].min(), p_df['X'].max()])
+    else:
+        ax.set_xlim(x_range)
+        p_df = p_df[(p_df['X']>=x_range[0]) & (p_df['X']<=x_range[1])]
+    # set axis range for Y axis
+    if y_range is None:
+        ax.set_ylim([p_df['Y'].min(), p_df['Y'].max()])
+    else:
+        ax.set_ylim(y_range)
+        p_df = p_df[(p_df['Y']>=y_range[0]) & (p_df['Y']<=y_range[1])]
+    # set axis range for Z axis
+    if z_range is None:
+        ax.set_zlim([p_df['Z'].min(), p_df['Z'].max()])
+    else:
+        ax.set_zlim(z_range)
+        p_df = p_df[(p_df['Z']>=z_range[0]) & (p_df['Z']<=z_range[1])]
+    
+    # plot scatter plot with datapoints
+    ax.scatter(p_df.X, p_df.Y, p_df.Z, c='k', marker='.', s=marker_size, facecolors='none', edgecolors='none')
+    
+    # set labels
+    ax.set_xlabel('X')    
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+        
+    # save plot to file
+    if fname is not None:
+        fig.savefig(work_dir+fname, dpi=600)
+    # show the plot
     plt.show()
+    
+    # return number of points that are plotted
+    return ax
+
+
+
+def plot_sliding_box(point_df, bbox, triang=None):
+    tmp_df = point_df[(point_df['X']>=bbox[0][0]) & (point_df['X']<=bbox[1][0]) & \
+                      (point_df['Y']>=bbox[0][1]) & (point_df['Y']<=bbox[1][1]) & \
+                      (point_df['Z']>=bbox[0][2]) & (point_df['Z']<=bbox[1][2])]
+    ax = plot_point_cloud(tmp_df, marker_size=5)
+    if triang is None:
+        triang = mtri.Triangulation(tmp_df.X, tmp_df.Y)
+    
+    # set up figure and axis
+    ax.plot_trisurf(triang, tmp_df.Z, cmap=plt.cm.CMRmap)
+    
 
 
 def main():
