@@ -219,7 +219,7 @@ def build_plane_list(points_df, plane_list, point_list, triangles=None, dist_cut
     
     
     
-def read_data_and_process(data_frame=None, verbose=True):
+def read_data_and_process(data_frame=None, translation=None, verbose=True, min_count=3, box_size=1.0, overlap=0.2):
     '''
     Read points cloud data within a specified zone and extract all plane parameters
     data_frame: if provided, the data in the dataframe will be used without filtering instead of reading from file.
@@ -242,7 +242,7 @@ def read_data_and_process(data_frame=None, verbose=True):
     box_list = slide_boxes([df1['X'].min(), df1['X'].max()], 
                            [df1['Y'].min(), df1['Y'].max()], 
                            [df1['Z'].min(), df1['Z'].max()],
-                           box_size=1.0, overlap=0.2)
+                           box_size=box_size, overlap=overlap)
     # Initialize the objects to keep track of planes, points on planes and number of points in each sliding box
     plane_list = []
     point_list = []
@@ -256,7 +256,7 @@ def read_data_and_process(data_frame=None, verbose=True):
         # Keep track of the number of datapoints in each sliding box
         points_count.append(len(tmp_df))
         # process the reduced dataframe if a minimum number of points exist
-        if len(tmp_df)>3:
+        if len(tmp_df)>=min_count:
             # create ndarray and perform PCA analysis on datapoints
             data_vals = tmp_df.values 
             pca = PCA()
@@ -269,7 +269,7 @@ def read_data_and_process(data_frame=None, verbose=True):
         else:
             tri_list.append(None)
         
-    return df1, np.asarray(plane_list), np.asarray(point_list), np.asarray(points_count), box_list, tri_list
+    return df1, translation, np.asarray(plane_list), np.asarray(point_list), np.asarray(points_count), box_list, tri_list
     
 
 
@@ -300,7 +300,7 @@ def polar_stereonet(ax, strike_norm, theta, min_count, rlabel=None):
                  rotation=90-label_position, ha='left', va='bottom')
     # plot data using pcolormesh
     ax.pcolormesh(theta, r, H, shading='gouraud', cmap=plt.get_cmap('Blues'), edgecolors='None')    
-    ax.plot(np.radians([10,45,45,10,10]),[45,45,60,60,45], color='r', zorder=10)
+    #ax.plot(np.radians([10,45,45,10,10]),[45,45,60,60,45], color='r', zorder=10)
     # plot gridlines
     ax.grid(True, linewidth=1)
     ax.set_yticks([0,15,30,45,60,75,90])
@@ -326,9 +326,12 @@ def plot_double_stereonets(strike_norm, dip, theta, fname=None, min_count=0):
     # set up axis 0 for left plot
     ax0 = fig.add_subplot(121, projection='polar')
     ax0 = polar_stereonet(ax0, strike_norm, theta, min_count, rlabel='Pole Dip, degrees')
+    ax0 = plot_rectangle(ax0, 210, 15, 230, 25)
+    ax0 = plot_rectangle(ax0, 320, 0, 360, 15)
     # set up axis 1 for rigth plot
     ax1 = fig.add_subplot(122, projection='polar')
     ax1 = polar_stereonet(ax1, strike_norm, dip, min_count, rlabel='Plane Dip, degrees')
+    ax1 = plot_rectangle(ax1, 210, 90-15, 230, 90-25)
     # save figure if fname is provided
     if fname is not None:
         plt.savefig(work_dir+fname, dpi=600)
@@ -390,16 +393,60 @@ def plot_point_cloud(point_df, fname=None, x_range=None, y_range=None, z_range=N
 
 
 def plot_sliding_box(point_df, bbox, triang=None):
+    '''
+    plot the points inside a 3d bounding box.
+    use triangulation object to plot triangles if provided
+    '''
     tmp_df = point_df[(point_df['X']>=bbox[0][0]) & (point_df['X']<=bbox[1][0]) & \
                       (point_df['Y']>=bbox[0][1]) & (point_df['Y']<=bbox[1][1]) & \
                       (point_df['Z']>=bbox[0][2]) & (point_df['Z']<=bbox[1][2])]
-    ax = plot_point_cloud(tmp_df, marker_size=5)
-    if triang is None:
-        triang = mtri.Triangulation(tmp_df.X, tmp_df.Y)
+    ax = plot_point_cloud(tmp_df, marker_size=10)
+    # plot triangles
+    if triang is not None:
+        # set up figure and axis
+        ax.plot_trisurf(triang, tmp_df.Z, cmap=plt.cm.CMRmap)
     
-    # set up figure and axis
-    ax.plot_trisurf(triang, tmp_df.Z, cmap=plt.cm.CMRmap)
+
+
+def plot_rectangle(ax, t0, r0, t1, r1):
+    '''
+    Draw a rectangle in polar space
+    t0, r0 the first corner of the rectangle
+    t1, r1 the opposite corner of the rectangle
+    all values are in degees
+    '''
+    ax.plot(np.radians(np.linspace(t0, t1, 100)), 90-np.linspace(r0, r0, 100), color='r')
+    ax.plot(np.radians(np.linspace(t1, t1, 100)), 90-np.linspace(r0, r1, 100), color='r')
+    ax.plot(np.radians(np.linspace(t1, t0, 100)), 90-np.linspace(r1, r1, 100), color='r')
+    ax.plot(np.radians(np.linspace(t0, t0, 100)), 90-np.linspace(r1, r0, 100), color='r')
+    #
+    return ax
+
+
+
+def filter_and_plot(point_df, i_list, j_list, k_list, cond1_list, cond1_range, cond2_list, cond2_range):
+    '''
+    filter the dataset based on the conditions presented and the range thereof
+    '''
+    i_rev = i_list[(cond1_list>=cond1_range[0]) & (cond1_list<=cond1_range[1]) & \
+                   (cond2_list>=cond2_range[0]) & (cond2_list<=cond2_range[1])].astype(int)
+    j_rev = j_list[(cond1_list>=cond1_range[0]) & (cond1_list<=cond1_range[1]) & \
+                   (cond2_list>=cond2_range[0]) & (cond2_list<=cond2_range[1])].astype(int)
+    k_rev = k_list[(cond1_list>=cond1_range[0]) & (cond1_list<=cond1_range[1]) & \
+                   (cond2_list>=cond2_range[0]) & (cond2_list<=cond2_range[1])].astype(int)
+    #
+    i_row = np.asarray([point_df.index.get_loc(x) for x in i_rev])
+    j_row = np.asarray([point_df.index.get_loc(x) for x in j_rev])
+    k_row = np.asarray([point_df.index.get_loc(x) for x in k_rev])
+    triangles = np.vstack((i_row, j_row, k_row)).T
+    #
+    triang = mtri.Triangulation(point_df.X, point_df.Y, triangles=triangles)
+    ax = plot_point_cloud(point_df, marker_size=1)
+    ax.plot_trisurf(triang, point_df.Z, cmap=plt.cm.CMRmap, edgecolor='None')
     
+    return ax
+    
+
 
 
 def main():
